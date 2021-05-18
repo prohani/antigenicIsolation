@@ -1,0 +1,222 @@
+---
+title: "Detecting Antigenic Outliers Using Sequence Data"
+date: "`r Sys.Date()`"
+author: K. Bodie Weedop
+output: 
+  bookdown::markdown_document2:
+    base_format: rmarkdown::md_document
+    variant: gfm
+    toc: true
+bibliography: ["/home/kbweedop/windows/Dropbox/bibliographies/antigenic_coordinate_prediction.bib", "/home/kbweedop/windows/Dropbox/bibliographies/antigenic_cartography.bib", "/home/kbweedop/windows/Dropbox/bibliographies/r_packages.bib"]
+link-citations: true
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(GGally)
+library(patchwork)
+library(magick)
+library(knitr)
+library(pdftools)
+library(png)
+library(factoextra)
+library(RColorBrewer)
+
+knitr::opts_chunk$set(echo = TRUE, fig.align="center", fig.path='../figure/', fig.height=5, fig.width=10)
+
+# Color function for plots
+gg_color_hue <- function(n) {
+  hues <- seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+```
+
+# Predicting Antigenic Coordinates from Sequence Data
+
+Many influenza samples are collected each year and the hemagglutinin (HA) gene segment, if not all gene segments, are sequenced from many collected samples. Sequence data is quite useful when identifying subtypes or genotypes of a sample or when performing phylodynamic analyses. Hemagglutinin inhibition (HI) assays can also be performed on isolates to provide information on the viral antigenic characterization and the efficacy of a vaccine against the sample. HI assay measurements may also be used to map isolates onto an antigenic map, providing a quantification and visualization of antigenic evolution. HI assay measurements, however, require a time-intensive protocol and, therefore, fewer isolates are assayed than are sequenced. This discrepancy between the amount of genetic data and corresponding phenotypic characterizations presents challenges when measuring phenotypic movements of an evolving strain. Aim 2 of the proposal submitted to the CDC describes a proposed methodology for addressing this issue. 
+
+To develop a predictive model (as described in aim 3 in the proposal), data must be extracted from isolate sequence data and related back to the HI assay results (_e.g._ antigenic coordinates). An understanding of the HI assay is useful here. The HI assay uses a serial dilution of serum/antiserum to identify the concentration needed to block hemagglutination of the viral particles and red blood cells. The HI titer value is the inverse of the last dilution of antibodies that neutralized hemagglutination. As dilutions increase, any binding affinity between antibodies and viral particles is disrupted. While maintaining the ability to bind to host cells, any reduction in the binding affinity of antibodies due to physiochemical changes (_e.g._ hydrophobicity, polarity, etc.) in the HA gene segment would be evolutionarily advantageous.
+
+## Evolution of Physiochemical Properties Over Time
+
+In general, HA1, one of the two subunits (HA1 and HA2) comprising the HA gene segment, shows signatures of strong positive selection to evolve novel antigenic variants [@bushPositiveSelectionH31999, @bushPredictingEvolutionHuman1999]. As strong selection from immune pressure evolves novel variants of influenza strains, directional responses are seen values of physiochemical properties through time. For example, Arinaminpathy and Grenfell [-@arinaminpathyDynamicsGlycoproteinCharge2010] showed that directional selection pressure on HA1 subunit from influenza A/H3N2 viruses lead to an increase in polarity from 1968 to 2003. We demonstrate similar directional responses in other physiochemical measurements from sequences during that same time period (fig . \@ref(fig:physiochemicalTrends)). Some further research has shown a similar phenomena occurring in influenza B viruses [@saad-royImplicationsLocalizedCharge2020]. 
+
+```{r physiochemicalTrends, echo=FALSE, fig.height=6, fig.cap="Directional trends in physiochemical properties measured from influenza A/H3N2 samples collected between 1968 and 2003."}
+data_path <- '../data/processedData/gisaid_1970-2020_HA1_physiochemical_properties.csv'
+HA1_physiochemical <- read.csv(data_path, stringsAsFactors = FALSE)
+HA1_physiochemical$date <- as.Date(HA1_physiochemical$date)
+HA1_physiochemical_subset <- HA1_physiochemical[which(HA1_physiochemical$date < as.Date("2004-01-01")),]
+
+source("../plotting/gisaid_physiochemical_plotting.R")
+
+p1 <- gisaid_hydrophobicity_vs_time(HA1_physiochemical_subset)
+p2 <- gisaid_boman_vs_time(HA1_physiochemical_subset)
+p3 <- gisaid_instability_vs_time(HA1_physiochemical_subset)
+
+layout <- "
+AABB
+#CC#
+"
+
+p1 + p2 + p3 + plot_layout(design = layout)
+```
+
+It is my hypothesis that we can use physiochemical measurements, along with other data, as features in a model to predict the antigenic coordinates of future isolates.
+
+## Data
+
+To begin tackling this issue, I have limited myself to the data provided by Smith et al. -@smithMappingAntigenicGenetic2004a. This data source provides amino acid sequences of the HA1 subunit, HI assay measurements and published antigenic coordinates (from the published 2-dimensional antigenic map). Sequences are provided with the year which samples were collected but there is no further resolution (_e.g._ day, month). The collection year ranges from 1968 to 2003. The sampling distribution is not even with respect to this time range. From these sequences, I have constructed a phylogenetic tree and measured physiochemical properties of each sequence. 
+
+### Trends in antigenic map coordinate planes
+
+Trends in each of the coordinate planes (when samples are sorted by collection year) within antigenic maps depends on the number of dimensions used in the map. The original map presented by @smithMappingAntigenicGenetic2004a is a 2-dimensional map where one of the antigenic coordinate planes (equivalent to the x-coordinate plane) shows a wave pattern and the other (equivalent to the y-coordinate plane) shows a linear pattern (fig. \@ref(fig:twoDimensionalTrend)). If, however, HI titer results are only reduced to a 3-dimensional map, the pattern in coordinate values in each plane are not as complex (fig . \@ref(fig:threeDimensionalTrend)).
+
+```{r twoDimensionalTrend, fig.height=4, echo=FALSE, fig.cap="Trends in coordinate values of two-dimensional antigenic map. Samples are sorted by collection date."}
+coors_2d <- read.csv('../data/processedData/sequence_physioproperties.csv')
+
+th <- theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(),
+          axis.line = element_line(colour = "black"),
+          text = element_text(size = 12, family = "Arial"))
+
+p1 <- (
+    ggplot(coors_2d, aes(x = seq_len(nrow(coors_2d)), y = antigenic_x)) +
+    geom_point(color = gg_color_hue(2)[1]) +
+    xlab("Sequence of data (corresponds with date)") +
+    ylab("x-coordinate value") +
+    th
+)
+
+p2 <- (
+    ggplot(coors_2d, aes(x = seq_len(nrow(coors_2d)), y = antigenic_y)) +
+    geom_point(color = gg_color_hue(2)[2]) +
+    xlab('Sequence of data (corresponds with date)') +
+    ylab('y-coordinate value') +
+    th
+)
+
+p1 + p2
+```
+
+```{r threeDimensionalTrend, echo=FALSE, fig.height=6, fig.cap="Trends in coordinate values of three-dimensional antigenic map. Samples are sorted by collection date."}
+coors_3d <- read.csv('../data/processedData/3D_h3map_coords.csv')
+
+p1 <- ggplot(coors_3d, aes(x = seq_len(nrow(coors_3d)), y = AG1)) +
+      geom_point(color = gg_color_hue(3)[1]) +
+      xlab("Sequence of data (corresponds with date)") +
+      ylab("x-coordinate value") +
+      th
+
+p2 <- ggplot(coors_3d, aes(x = seq_len(nrow(coors_3d)), y = AG2)) +
+      geom_point(color = gg_color_hue(3)[2]) +
+      xlab("Sequence of data (corresponds with date)") +
+      ylab("y-coordinate value") +
+      th
+
+p3  <- ggplot(coors_3d, aes(x = seq_len(nrow(coors_3d)), y = AG3)) +
+       geom_point(color = gg_color_hue(3)[3]) +
+       xlab("Sequence of data (corresponds with date)") +
+       ylab("z-coordinate value") +
+    th
+
+layout <- "
+AABB
+#CC#
+"
+
+p1 + p2 + p3 + plot_layout(design = layout)
+```
+
+#### Data Overview
+
+Here is a segment of the data being used (each row corresponds to a single sequence):
+
+```{r data_head, echo = FALSE}
+options(width = 120)
+df <- read.csv(file = "../data/processedData/sequence_physioproperties.csv", header = TRUE, stringsAsFactors = FALSE)
+head(df)
+```
+
+The features in this data are as follows:
+
+1. `distRoot`: distance of sample from the root of the phylogeny (`adephylo::distRoot`, [@jombartAdephyloNewTools2010]).
+2. `branch_length`: branch length on the phylogeny from a preceding node to the isolate (using `ape` [@paradisApeEnvironmentModern2019])
+2. `hydrophobicity`: hydrophobicity index of amino acid sequence (`Peptides::hydrophobicity`, [@osorioPeptidesPackageData2015]).
+3. `charge`: theoretical net charge of amino acid sequence (`Peptides::charge`, [@osorioPeptidesPackageData2015]).
+4. `boman`: Boman (Potential Protein Interaction) index of amino acid sequence (`Peptides::boman`, [@osorioPeptidesPackageData2015]).
+5. `instability`: instability index of amino acid sequence (`Peptides::instaIndex`, [@osorioPeptidesPackageData2015]).
+6. `isoelectric_point`: theoretical isoelectric point of the amino acid sequence (`seqinr::AAstat`, [@charifSeqinR02Contributed2007]).
+
+
+```{r physiochemicalCorrelationMatrix, fig.height=10, echo = FALSE, message=FALSE, warning=FALSE, fig.cap="Correlation matrix of physiochemical properties and their values when measured from each sample included in the Smith et al. 2004 data. Color of each data point corresponds to the antigenic cluster which the sample belongs."}
+ggplot <- function(...) ggplot2::ggplot(...) + 
+  scale_color_brewer(palette="Paired") + 
+  scale_fill_brewer(palette="Paired")
+unlockBinding("ggplot", parent.env(asNamespace("GGally")))
+assign("ggplot", ggplot, parent.env(asNamespace("GGally")))
+
+smith_physiochemical_df <- read.csv(file = "../data/processedData/sequence_physioproperties.csv", 
+                                    header = TRUE, 
+                                    stringsAsFactors = FALSE)
+smith_physiochemical_df$date <- NA
+for (i in seq_len(nrow(smith_physiochemical_df))) {
+  	two_year <- as.numeric(strsplit(smith_physiochemical_df$seq_id[i], split = "/")[[1]][3])
+  	if(two_year < 21) {
+    	smith_physiochemical_df$date[i] <- 2000 + two_year
+  	} else {
+    	smith_physiochemical_df$date[i] <- 1900 + two_year
+  	}
+}
+cols_needed <- c('hydrophobicity', 'charge', 'boman', 'instability', 'isoelectric_point', 'date')
+cols_needed <- which(colnames(smith_physiochemical_df) %in% cols_needed)
+
+smith_physiochemical_df$cluster <-
+  factor(
+    smith_physiochemical_df$cluster,
+    levels = c(
+      "HK68", "EN72", "VI75", "TX77", "BK79", "SI87", "BE89", "BE92", "WU95", "SY97", "FU02"
+    )
+  )
+
+smith_physio_matrix <- (
+  ggpairs(data = smith_physiochemical_df,
+          columns = cols_needed,
+          mapping = ggplot2::aes(color = cluster),
+          legend = 1) +
+    theme(legend.position = "bottom") 
+)
+smith_physio_matrix
+```
+
+After correlating these measurements with each other you can see that there is clear relation between some of these measurements. D. Gokhale noticed this and suggested that I use some dimensionality reduction method such as a PCA to reduce the variation into a lower dimensional space.
+
+```{r pcaAnalysis}
+physioData <- smith_physiochemical_df
+cols_needed <- c('hydrophobicity', 'charge', 'boman', 'instability', 'isoelectric_point')
+cols_needed <- which(colnames(smith_physiochemical_df) %in% cols_needed)
+physioSubset <- physioData[, cols_needed]
+physioPca <- prcomp(physioSubset, scale = TRUE)
+```
+
+```{r}
+fviz_eig(physioPca)
+```
+
+```{r}
+physioData$cluster <- factor(physioData$cluster)
+p <- fviz_pca_ind(physioPca,
+             geom = "point",
+             habillage = physioData$cluster,
+             palette = RColorBrewer::brewer.pal(n = 11, name = "Paired"))
+p <- p + scale_color_manual(values = RColorBrewer::brewer.pal(n = 11, name = "Paired"), breaks = unique(physioData$cluster)) +
+  guides(shape = FALSE)
+p
+```
+
+```{r}
+fviz_pca_var(physioPca,
+             col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+```
