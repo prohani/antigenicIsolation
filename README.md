@@ -9,3 +9,7 @@ The `src/` directory contains files needed to get your R environment ready for t
   - python scripts are where you can find the Jupyter notebooks that implement the isolation forest algorithm.
   
 `notebook/` is where you can find a description of the data and some explanation of the project.
+
+`plotting/` contains some scripts that are used for plotting functions used in the Rmarkdown file in `notebook/`
+
+`figure/` contains `.png` files of the figures produced in the Rmarkdown file
